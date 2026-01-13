@@ -336,7 +336,9 @@ def plot_modulator_spectrum(
     y_max = np.percentile(psd_db[psd_db < np.inf], 99)  # 99th percentile
     ax.set_ylim(y_min - 10, y_max + 10)
     
-    plt.tight_layout()
+    # Only apply tight_layout if we created the figure (no inset yet)
+    if fig_ax is None:
+        plt.tight_layout()
     
     # Save if requested
     if save_path:
