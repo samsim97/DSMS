@@ -451,15 +451,16 @@ def run_single_simulation(
             )
         
         # Plot performance summary dashboard
-        DeltaSigmaPlotter.plot_performance_summary(
-            metrics_dict={
-                'snr_db': snr_time_domain_db,
-                'enob': enob_measured,
-                'switching_rate': switching_metrics['switching_rate'],
-                'modulator_order': modulator_order,
-                'osr': oversampling_ratio
-            }
-        )
+        # TODO: Data in plot is faulty
+        # DeltaSigmaPlotter.plot_performance_summary(
+        #     metrics_dict={
+        #         'snr_db': snr_time_domain_db,
+        #         'enob': enob_measured,
+        #         'switching_rate': switching_metrics['switching_rate'],
+        #         'modulator_order': modulator_order,
+        #         'osr': oversampling_ratio
+        #     }
+        # )
 
     # ========================================================================
     # STEP 8: COMPILE AND RETURN RESULTS
@@ -903,10 +904,11 @@ def example_high_frequency_signal():
     
     results = run_single_simulation(
         modulator_order=1,
-        oversampling_ratio=512,      # Higher OSR for better performance at high freq
+        oversampling_ratio=10000,      # Higher OSR for better performance at high freq
         signal_frequency_hz=10000.0, # 10 kHz - your max frequency
         signal_amplitude=0.5,
         number_of_samples=32768,     # More samples for better resolution
+        input_word_length_bits=8,
         filter_cutoff_frequency_hz=15000.0,  # 15 kHz cutoff
         plot_results=True,
         verbose=True
@@ -946,7 +948,7 @@ if __name__ == "__main__":
         print(f"Order {order}: SNR = {results['snr_time_domain_db']:.1f} dB, "
               f"ENOB = {results['enob_measured']:.1f} bits, "
               f"Stable = {results['is_stable']}, "
-          f"Max Integrator = {results['max_integrator_magnitude']:.2f}")    
+              f"Max Integrator = {results['max_integrator_magnitude']:.2f}")    
     
     
     # Print design recommendations first
