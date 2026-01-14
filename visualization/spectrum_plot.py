@@ -99,7 +99,7 @@ def compute_psd_fft(
     n_samples = len(signal_data)
     
     # Apply Hanning window to reduce spectral leakage
-    window = scipy_signal.windows.hann(n_samples)
+    window = np.hanning(n_samples)
     windowed_signal = signal_data * window
     
     # Determine FFT size
@@ -117,9 +117,7 @@ def compute_psd_fft(
     psd = psd / (sampling_frequency_hz * window_power)
     
     # Double power (except DC and Nyquist) for one-sided spectrum
-    # Only double if we have more than 2 frequency bins
-    if len(psd) > 2:
-        psd[1:-1] *= 2
+    psd[1:-1] *= 2
     
     # Frequency axis
     frequencies = np.fft.fftfreq(nfft, d=1.0 / sampling_frequency_hz)[:nfft // 2 + 1]
