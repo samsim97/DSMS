@@ -978,7 +978,7 @@ def example_high_frequency_signal():
         number_of_samples=655360,
         # number_of_samples=32768,
         use_ideal_filter=False,
-        # dither_std=1e-3,
+        dither_std=0e-7,
         dither_seed=42,
         filter_cutoff_frequency_hz=15000.0,
         plot_results=True,
