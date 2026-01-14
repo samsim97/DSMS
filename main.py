@@ -902,11 +902,12 @@ def example_high_frequency_signal():
     print("#" * 70)
     
     results = run_single_simulation(
-        modulator_order=1,
+        modulator_order=2,
         oversampling_ratio=10000,      # Higher OSR for better performance at high freq
-        signal_frequency_hz=10000.0, # 10 kHz - your max frequency
+        signal_frequency_hz=10000.0,
         signal_amplitude=0.5,
-        number_of_samples=32768,     # More samples for better resolution
+        number_of_samples=655360,  # More samples for better frequency resolution
+        # number_of_samples=32768,
         filter_cutoff_frequency_hz=15000.0,  # 15 kHz cutoff
         plot_results=True,
         verbose=True
@@ -948,6 +949,8 @@ if __name__ == "__main__":
               f"Stable = {results['is_stable']}, "
           f"Max Integrator = {results['max_integrator_magnitude']:.2f}")    
     
+    # delta_f = sampling_frequency_hz / number_of_samples
+    # At OSR = 512 and fs = 20 MHz, number_of_samples = 32768 delta_f = 610.3515625 Hz -> Width of each FFT bin
     
     # Print design recommendations first
     print_design_recommendations(
