@@ -60,7 +60,6 @@ from metrics.fpga_metrics import FPGAMetricsCalculator
 
 # Visualization
 from visualization.delta_sigma_plotter import DeltaSigmaPlotter
-from visualization.spectrum_plot import plot_spectrum_with_inset
 
 
 # ============================================================================
@@ -433,15 +432,13 @@ def run_single_simulation(
             samples_to_show=samples_to_show
         )
         
-        # Plot frequency spectrum using enhanced plotting function
-        # Uses normalized mode with zoom inset for comprehensive view
-        plot_spectrum_with_inset(
-            modulator_output=modulator_output,
+        # Plot frequency spectrum
+        DeltaSigmaPlotter.plot_frequency_spectrum(
+            signal=modulator_output,
             sampling_frequency_hz=sampling_frequency_hz,
+            signal_label="Modulator Output Spectrum",
             signal_frequency_hz=signal_frequency_hz,
-            filter_cutoff_hz=filter_cutoff_frequency_hz,
-            zoom_factor=5.0,
-            use_welch=True
+            cutoff_frequency_hz=filter_cutoff_frequency_hz
         )
         
         # Plot integrator states (for stability analysis)
