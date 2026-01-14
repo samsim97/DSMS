@@ -212,11 +212,11 @@ class DeltaSigmaPlotter:
         ax.legend(loc='upper right', fontsize=9)
 
         # Make room for interactive widgets below the plot
-        plt.subplots_adjust(bottom=0.18)
+        plt.subplots_adjust(bottom=0.32)
 
         # Interactive RangeSlider to control visible frequency range (in kHz)
         try:
-            ax_slider = plt.axes([0.15, 0.03, 0.7, 0.04], facecolor='lightgoldenrodyellow')
+            ax_slider = plt.axes([0.15, 0.02, 0.7, 0.04], facecolor='lightgoldenrodyellow')
             slider = RangeSlider(
                 ax=ax_slider,
                 label='Visible Frequency Range (kHz)',
@@ -266,6 +266,10 @@ class DeltaSigmaPlotter:
 
         colors = ['b', 'r', 'g', 'm', 'c', 'orange', 'brown']
 
+        # Track global min/max for adaptive y-limits to avoid clipping peaks
+        max_spec_db = -np.inf
+        min_spec_db = np.inf
+
         for idx, (label, signal) in enumerate(signals_dict.items()):
             number_of_samples: int = len(signal)
 
@@ -286,6 +290,11 @@ class DeltaSigmaPlotter:
             color = colors[idx % len(colors)]
             ax.plot(freq_khz, spec_db, color=color, linewidth=0.7, label=label, alpha=0.8)
 
+            # update global min/max
+            if spec_db.size:
+                max_spec_db = max(max_spec_db, float(np.max(spec_db)))
+                min_spec_db = min(min_spec_db, float(np.min(spec_db)))
+
         # Mark signal bandwidth
         ax.axvline(
             x=signal_bandwidth_hz / 1000,
@@ -300,9 +309,41 @@ class DeltaSigmaPlotter:
             fontsize=12, fontweight='bold'
         )
         ax.set_xlim(0, signal_bandwidth_hz * 5 / 1000)
-        ax.set_ylim(-100, 20)
+
+        # Adaptive y-limits: leave some headroom above the highest peak and floor below
+        if max_spec_db == -np.inf:
+            # fallback if no data
+            ax.set_ylim(-100, 20)
+        else:
+            upper = max(20.0, max_spec_db + 10.0)
+            lower = min(-120.0, min_spec_db - 10.0) if min_spec_db != np.inf else -120.0
+            ax.set_ylim(lower, upper)
         ax.grid(True, alpha=0.3)
         ax.legend(loc='upper right', fontsize=9)
+        # Make room for interactive slider below the plot
+        plt.subplots_adjust(bottom=0.32)
+
+        # Add RangeSlider for visible frequency range (kHz)
+        try:
+            valinit_max = float(min(signal_bandwidth_hz * 5 / 1000, (freq_khz.max() if 'freq_khz' in locals() else frequency_axis.max()/1000)))
+            ax_slider = plt.axes([0.15, 0.02, 0.7, 0.04], facecolor='lightgoldenrodyellow')
+            slider = RangeSlider(
+                ax=ax_slider,
+                label='Visible Frequency Range (kHz)',
+                valmin=0.0,
+                valmax=float(freq_khz.max()),
+                valinit=(0.0, valinit_max),
+                valfmt='%.2f'
+            )
+
+            def _update(val):
+                vmin, vmax = slider.val
+                ax.set_xlim(vmin, vmax)
+                fig.canvas.draw_idle()
+
+            slider.on_changed(_update)
+        except Exception:
+            pass
 
         plt.tight_layout()
 
