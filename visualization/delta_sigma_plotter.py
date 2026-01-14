@@ -14,6 +14,7 @@ Plots included:
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.widgets import RangeSlider
 from typing import Optional, List, Tuple, Dict, Any
 
 
@@ -128,6 +129,7 @@ class DeltaSigmaPlotter:
         signal_frequency_hz: Optional[float] = None,
         cutoff_frequency_hz: Optional[float] = None,
         show_full_spectrum: bool = False,
+        frequency_multiplier: int = 20,
         save_path: Optional[str] = None
     ) -> None:
         """
@@ -170,9 +172,10 @@ class DeltaSigmaPlotter:
         frequencies_positive: np.ndarray = frequency_axis[positive_mask]
         spectrum_positive: np.ndarray = power_spectrum_db[positive_mask]
 
-        # Limit frequency range for better visibility
+        # Limit frequency range for better visibility.
+        # Use `frequency_multiplier` to allow a wider default display around cutoff.
         if not show_full_spectrum and cutoff_frequency_hz is not None:
-            freq_limit = min(cutoff_frequency_hz * 10, sampling_frequency_hz / 2)
+            freq_limit = min(cutoff_frequency_hz * frequency_multiplier, sampling_frequency_hz / 2)
         else:
             freq_limit = sampling_frequency_hz / 2
 
@@ -207,6 +210,32 @@ class DeltaSigmaPlotter:
         ax.set_ylim(-120, max(spectrum_positive) + 10)
         ax.grid(True, alpha=0.3)
         ax.legend(loc='upper right', fontsize=9)
+
+        # Make room for interactive widgets below the plot
+        plt.subplots_adjust(bottom=0.18)
+
+        # Interactive RangeSlider to control visible frequency range (in kHz)
+        try:
+            ax_slider = plt.axes([0.15, 0.03, 0.7, 0.04], facecolor='lightgoldenrodyellow')
+            slider = RangeSlider(
+                ax=ax_slider,
+                label='Visible Frequency Range (kHz)',
+                valmin=0.0,
+                valmax=float(frequencies_khz.max()),
+                valinit=(0.0, float(freq_limit / 1000)),
+                valfmt='%.2f'
+            )
+
+            def _update(val):
+                vmin, vmax = slider.val
+                ax.set_xlim(vmin, vmax)
+                fig.canvas.draw_idle()
+
+            slider.on_changed(_update)
+        except Exception:
+            # If interactive widgets are not available in the current backend,
+            # silently continue without interactive controls.
+            pass
 
         plt.tight_layout()
 
