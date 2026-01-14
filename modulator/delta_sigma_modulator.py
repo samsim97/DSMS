@@ -111,7 +111,7 @@ class DeltaSigmaModulator:
 
     Attributes:
         modulator_order (int): Number of integrator stages (1-5 recommended).
-        quantizer (AbstractQuantizer): The quantizer instance.
+        quantizer (Abstraintegrator_saturation_limitctQuantizer): The quantizer instance.
         feedback_dac (FeedbackDigitalToAnalogConverter): Feedback path model.
         integrators (List[Integrator]): List of integrator instances.
         feedback_coefficients (List[float]): Coefficients for each feedback path.

@@ -49,7 +49,9 @@ from reconstruction.ideal_low_pass_filter import IdealLowPassFilter
 # Metrics
 from metrics.signal_to_noise_ratio import (
     compute_signal_to_noise_ratio_time_domain,
-    compute_in_band_snr
+    compute_snr_with_diagnostics,
+    compute_in_band_snr,
+    compute_sinad_in_band
 )
 from metrics.effective_number_of_bits import (
     compute_effective_number_of_bits,
@@ -73,6 +75,8 @@ def run_single_simulation(
     signal_amplitude: float = 0.5,
     number_of_samples: int = 16384,
     input_word_length_bits: int = 16,
+    dither_std: float = 0.0,
+    dither_seed: Optional[int] = None,
     filter_cutoff_frequency_hz: Optional[float] = None,
     use_ideal_filter: bool = False,
     integrator_saturation_limit: Optional[float] = 4.0,
@@ -189,12 +193,20 @@ def run_single_simulation(
     )
     
     # Generate the sinusoidal test signal
-    input_signal: np.ndarray = signal_generator. generate_sinusoidal_signal(
+    input_signal: np.ndarray = signal_generator.generate_sinusoidal_signal(
         signal_frequency_hz=signal_frequency_hz,
         amplitude=signal_amplitude,
         phase_radians=0.0,  # Start at zero crossing
         direct_current_offset=0.0  # No DC offset
     )
+
+    # Optionally add small Gaussian dither to the input signal
+    if dither_std and dither_std > 0.0:
+        rng = np.random.default_rng(dither_seed)
+        dither = rng.normal(0.0, float(dither_std), size=input_signal.shape)
+        input_signal = input_signal + dither
+        if verbose:
+            print(f"  Added Gaussian dither to input (std={dither_std})")
     
     # Get the time axis for plotting
     time_axis: np.ndarray = signal_generator.get_time_axis()
@@ -215,9 +227,9 @@ def run_single_simulation(
     # Create the binary (1-bit) quantizer
     # This outputs +1 or -1 based on the sign of the input
     quantizer:  BinaryQuantizer = BinaryQuantizer(
-        threshold=0.0,           # Decision threshold at zero
-        positive_output_level=1.0,   # Output +1 for positive input
-        negative_output_level=-1.0   # Output -1 for negative input
+        threshold=0.0,              # Decision threshold at zero
+        positive_output_level=1.0,  # Output +1 for positive input
+        negative_output_level=-1.0  # Output -1 for negative input
     )
     
     # Create the feedback DAC (ideal for simulation)
@@ -337,6 +349,53 @@ def run_single_simulation(
     #     reference_signal=input_steady
     # )
     
+    # Calculate SINAD in-band
+    sinad_in_band_db, sinad_enob_in_band_db = compute_sinad_in_band(
+        signal=reconstructed_steady,
+        sampling_frequency_hz=sampling_frequency_hz,
+        signal_frequency_hz=signal_frequency_hz,
+        signal_bandwidth_hz=filter_cutoff_frequency_hz
+    )
+
+    # Robust time-domain least-squares SINAD (canonical)
+    time_steady = time_axis[transient_samples:]
+    try:
+        a = np.column_stack([
+            np.cos(2.0 * np.pi * signal_frequency_hz * time_steady),
+            np.sin(2.0 * np.pi * signal_frequency_hz * time_steady)
+        ])
+        coeffs, *_ = np.linalg.lstsq(a, reconstructed_steady, rcond=None)
+        fund = a.dot(coeffs)
+        resid = reconstructed_steady - fund
+        fund_power = float(np.mean(fund ** 2))
+        resid_power = float(np.mean(resid ** 2))
+        sinad_time_domain_db = 200.0 if resid_power < 1e-30 or fund_power <= 0.0 else 10.0 * np.log10(fund_power / resid_power)
+    except Exception:
+        sinad_time_domain_db = float('nan')
+
+    # Compute input quantization SNR as an upper bound for SINAD/ENOB
+    try:
+        ideal = signal_amplitude * np.sin(2.0 * np.pi * signal_frequency_hz * time_axis)
+        ideal_steady = ideal[transient_samples:]
+        err_q = ideal_steady - input_steady
+        sig_power_q = float(np.mean(ideal_steady ** 2))
+        err_power_q = float(np.mean(err_q ** 2))
+        if err_power_q < 1e-30:
+            input_quant_snr_db = 200.0
+        else:
+            input_quant_snr_db = 10.0 * np.log10(sig_power_q / err_power_q)
+    except Exception:
+        input_quant_snr_db = float('nan')
+
+    # Clamp LS SINAD to input quantization SNR (conservative canonical value)
+    if not np.isnan(sinad_time_domain_db) and not np.isnan(input_quant_snr_db):
+        sinad_time_domain_clamped_db = min(sinad_time_domain_db, input_quant_snr_db)
+    else:
+        sinad_time_domain_clamped_db = sinad_time_domain_db
+
+    # ENOB from canonical (clamped LS) SINAD
+    enob_from_sinad_canonical = compute_effective_number_of_bits(sinad_time_domain_clamped_db)
+
     # Calculate in-band SNR (most relevant metric for delta-sigma)
     snr_in_band_db: float = compute_in_band_snr(
         signal=modulator_output_steady,
@@ -346,7 +405,8 @@ def run_single_simulation(
     )
     
     # Calculate ENOB from measured SNR
-    enob_measured: float = compute_effective_number_of_bits(snr_time_domain_db)
+    enob_measured: float = compute_effective_number_of_bits(snr_in_band_db)
+    # enob_measured: float = compute_effective_number_of_bits(snr_time_domain_db)
     
     # Calculate theoretical ENOB for comparison
     enob_theoretical:  float = compute_theoretical_enob_for_delta_sigma(
@@ -357,10 +417,15 @@ def run_single_simulation(
     
     if verbose:
         print(f"  Transient samples:      {transient_samples} (removed)")
-        print(f"  SNR (time domain):      {snr_time_domain_db:.1f} dB")
+        # print(f"  SNR (time domain):      {snr_time_domain_db:.1f} dB")
         print(f"  SNR (in-band):          {snr_in_band_db:.1f} dB")
-        print(f"  ENOB (measured):        {enob_measured:.1f} bits")
-        print(f"  ENOB (theoretical):     {enob_theoretical:.1f} bits")
+        print(f"  ENOB (from SNR):        {enob_measured:.1f} bits")
+        # print(f"  ENOB (theoretical):     {enob_theoretical:.1f} bits")
+        print(f"  SINAD (in-band FFT):    {sinad_in_band_db:.1f} dB")
+        print(f"  ENOB (in-band FFT):     {sinad_enob_in_band_db:.1f} bits")
+        print(f"  SINAD (LS time-domain): {sinad_time_domain_db:.3f} dB")
+        print(f"  SINAD (LS clamped):     {sinad_time_domain_clamped_db:.3f} dB")
+        print(f"  ENOB (canonical):       {enob_from_sinad_canonical:.3f} bits")
 
     # ========================================================================
     # STEP 6: CALCULATE FPGA-SPECIFIC METRICS
@@ -469,7 +534,11 @@ def run_single_simulation(
         'signals': signals,
         'snr_time_domain_db': snr_time_domain_db,
         'snr_in_band_db':  snr_in_band_db,
+        'sinad_in_band_db': sinad_in_band_db,
+        'sinad_time_domain_db': sinad_time_domain_db,
+        'sinad_time_domain_clamped_db': sinad_time_domain_clamped_db,
         'enob_measured': enob_measured,
+        'enob_canonical_from_sinad': enob_from_sinad_canonical,
         'enob_theoretical': enob_theoretical,
         'is_stable': is_stable,
         'max_integrator_magnitude': max_integrator_magnitude,
@@ -684,7 +753,7 @@ def print_design_recommendations(
     
     # Print theoretical ENOB table
     print(f"\n--- Theoretical ENOB for Different Configurations ---")
-    print_enob_table(max_order=5, osr_values=[64, 128, 256, 512, 1024, 2048])
+    print_enob_table(max_order=5, osr_values=[64, 128, 256, 512, 1024, 2048, 10000])
     
     # Find configurations that meet the target ENOB
     print(f"\n--- Configurations Meeting Target ENOB ({target_enob:.1f} bits) ---")
@@ -692,7 +761,7 @@ def print_design_recommendations(
     recommended_configs: List[Tuple[int, int, float]] = []
     
     for order in range(1, 6):
-        for osr in [32, 64, 128, 256, 512, 1024, 2048, 4096]:
+        for osr in [32, 64, 128, 256, 512, 1024, 2048, 4096, 10000]:
             if osr > max_osr:
                 continue
             
@@ -903,12 +972,15 @@ def example_high_frequency_signal():
     
     results = run_single_simulation(
         modulator_order=2,
-        oversampling_ratio=10000,      # Higher OSR for better performance at high freq
+        oversampling_ratio=2048,
         signal_frequency_hz=10000.0,
-        signal_amplitude=0.5,
-        number_of_samples=655360,  # More samples for better frequency resolution
+        signal_amplitude=0.4,
+        number_of_samples=655360,
         # number_of_samples=32768,
-        filter_cutoff_frequency_hz=15000.0,  # 15 kHz cutoff
+        use_ideal_filter=False,
+        # dither_std=1e-3,
+        dither_seed=42,
+        filter_cutoff_frequency_hz=15000.0,
         plot_results=True,
         verbose=True
     )
@@ -916,9 +988,241 @@ def example_high_frequency_signal():
     return results
 
 
-# ============================================================================
-# MAIN ENTRY POINT
-# ============================================================================
+def run_diagnostic_checks(sim_results: Dict, harmonics: int = 6, transient_periods: int = 5, dither_std: float = 0.0, dither_seed: Optional[int] = None) -> None:
+    """
+    Run additional diagnostic checks and print raw power numbers used in SINAD.
+
+    Prints:
+      - Input quantization SNR (dB)
+      - Raw signal / distortion / noise powers used for in-band SINAD
+
+    This helps detect numerical or measurement artifacts when SINAD/ENOB
+    appears unrealistically large.
+    """
+    if not isinstance(sim_results, dict):
+        print("No simulation results provided for diagnostics.")
+        return
+
+    signals = sim_results.get('signals')
+    cfg = sim_results.get('configuration', {})
+    if signals is None:
+        print("No signals found in results for diagnostics.")
+        return
+
+    # Safely extract metadata from SignalContainer-like object
+    fs = None
+    f_sig = None
+    num_samples = None
+    try:
+        if hasattr(signals, 'sampling_frequency_hz'):
+            fs = getattr(signals, 'sampling_frequency_hz')
+        if hasattr(signals, 'signal_frequency_hz'):
+            f_sig = getattr(signals, 'signal_frequency_hz')
+        if hasattr(signals, 'get_number_of_samples') and callable(getattr(signals, 'get_number_of_samples')):
+            try:
+                num_samples = signals.get_number_of_samples()
+            except Exception:
+                num_samples = None
+        else:
+            # Fallback to time axis length if available
+            ta = getattr(signals, 'time_axis_seconds', None)
+            if ta is not None:
+                try:
+                    num_samples = len(ta)
+                except Exception:
+                    num_samples = None
+    except Exception:
+        fs = None
+        f_sig = None
+        num_samples = None
+
+    filter_cutoff = cfg.get('filter_cutoff_frequency_hz', None)
+
+    if fs is None or f_sig is None:
+        print('Insufficient signal metadata for diagnostics.')
+        return
+
+    # Transient removal (same logic as simulator)
+    transient_samples = int(fs / f_sig * transient_periods)
+    transient_samples = min(transient_samples, num_samples // 4)
+
+    time = signals.time_axis_seconds
+    input_q = signals.input_signal_digital_pcm
+    reconstructed = signals.reconstructed_analog_signal
+
+    if input_q is None or reconstructed is None:
+        print('Missing input or reconstructed signals for diagnostics.')
+        return
+
+    # Estimate input amplitude if not in configuration
+    amplitude = cfg.get('signal_amplitude', None)
+    if amplitude is None:
+        amplitude = float((np.max(input_q) - np.min(input_q)) / 2.0)
+
+    # Ideal high-precision sine (for quantization error estimate)
+    ideal = amplitude * np.sin(2.0 * np.pi * f_sig * time)
+
+    ideal_steady = ideal[transient_samples:]
+    quant_steady = input_q[transient_samples:]
+
+    # Input quantization SNR
+    err = ideal_steady - quant_steady
+    sig_power = float(np.mean(ideal_steady ** 2))
+    err_power = float(np.mean(err ** 2))
+    if err_power < 1e-30:
+        input_snr_db = 200.0
+    else:
+        input_snr_db = 10.0 * np.log10(sig_power / err_power)
+
+    print('\n--- Diagnostic: Input Quantization ---')
+    print(f'  Input amplitude (est): {amplitude:.6f}')
+    print(f'  Input quantization SNR: {input_snr_db:.3f} dB')
+
+    # Compute raw powers used by compute_sinad_in_band (for reconstructed signal)
+    rec = reconstructed[transient_samples:]
+    # Optionally add small dither to reveal true noise floor
+    if dither_std and dither_std > 0.0:
+        rng = np.random.default_rng(dither_seed)
+        noise = rng.normal(0.0, float(dither_std), size=rec.shape)
+        rec = rec + noise
+        print(f"\nNote: added Gaussian dither (std={dither_std}) to reconstructed signal for diagnostics.")
+    N = len(rec)
+    if N < 8:
+        print('Not enough steady samples for FFT diagnostics.')
+        return
+
+    # Compute powers via masking in the FFT domain then inverse-transform
+    # back to time-domain so Parseval/normalization issues are avoided.
+    # Use unwindowed FFT here so masked IFFT components map directly to
+    # time-domain components with the same units as `rec`.
+    spectrum = np.fft.fft(rec)
+    half = N // 2
+    freq = np.fft.fftfreq(N, d=1.0 / fs)
+    freq_res = fs / N
+    fund_bin = int(round(f_sig / freq_res)) if f_sig is not None else None
+
+    # Helper to include both positive and negative bins
+    def include_bins(bins_list):
+        idxs = set()
+        for b in bins_list:
+            if b is None:
+                continue
+            # positive frequency index
+            if 0 <= b < N:
+                idxs.add(b)
+            # symmetric negative index
+            nb = (-b) % N
+            if 0 <= nb < N:
+                idxs.add(nb)
+        return sorted(idxs)
+
+    # Determine in-band frequency indices
+    inband_idxs = [i for i in range(N) if (filter_cutoff is None or abs(freq[i]) <= filter_cutoff)]
+
+    # Signal bins: ±2 bins around fundamental (if fundamental known)
+    signal_bins_pos = []
+    if fund_bin is not None:
+        signal_bins_pos = [b for b in range(fund_bin - 2, fund_bin + 3) if 0 <= b < N]
+    signal_idxs = include_bins(signal_bins_pos)
+
+    # Harmonic bins
+    harm_idxs = set()
+    if fund_bin is not None:
+        for h in range(2, harmonics + 1):
+            hb = fund_bin * h
+            for off in range(-2, 3):
+                b = hb + off
+                if 0 <= b < N:
+                    harm_idxs.add(b)
+    harm_idxs = include_bins(sorted(harm_idxs))
+
+    # Mask and reconstruct time-domain components
+    mask_signal = np.zeros(N, dtype=complex)
+    for i in signal_idxs:
+        if filter_cutoff is None or abs(freq[i]) <= filter_cutoff:
+            mask_signal[i] = spectrum[i]
+
+    mask_harm = np.zeros(N, dtype=complex)
+    for i in harm_idxs:
+        if filter_cutoff is None or abs(freq[i]) <= filter_cutoff:
+            mask_harm[i] = spectrum[i]
+
+    mask_noise = np.array(spectrum, copy=True)
+    for i in set(signal_idxs) | set(harm_idxs):
+        mask_noise[i] = 0.0
+    # Also zero out bins outside reconstruction band
+    for i in range(N):
+        if filter_cutoff is not None and abs(freq[i]) > filter_cutoff:
+            mask_noise[i] = 0.0
+            mask_signal[i] = 0.0
+            mask_harm[i] = 0.0
+
+    comp_signal = np.fft.ifft(mask_signal).real
+    comp_harm = np.fft.ifft(mask_harm).real
+    comp_noise = np.fft.ifft(mask_noise).real
+
+    signal_power = float(np.mean(comp_signal ** 2))
+    distortion_power = float(np.mean(comp_harm ** 2))
+    noise_power = float(np.mean(comp_noise ** 2))
+
+    denom = noise_power + distortion_power
+    sinad_db = 200.0 if denom < 1e-30 or signal_power <= 0.0 else 10.0 * np.log10(signal_power / denom)
+
+    print('\n--- Diagnostic: Reconstructed spectrum powers (in-band, time-domain units) ---')
+    print(f'  Signal power (time-domain):    {signal_power:.6e}')
+    print(f'  Distortion power (time-domain): {distortion_power:.6e}')
+    print(f'  Noise power (time-domain):     {noise_power:.6e}')
+    print(f'  Computed SINAD (dB):           {sinad_db:.3f}')
+
+    # Consistency check: total power vs component sum
+    try:
+        total_power = float(np.mean(rec ** 2))
+        comp_sum = signal_power + distortion_power + noise_power
+        print('\n--- Power Consistency Check ---')
+        print(f'  Total rec power:              {total_power:.6e}')
+        print(f'  Sum of components:           {comp_sum:.6e}')
+    except Exception:
+        pass
+
+    # Time-domain least-squares fit to fundamental (robust SINAD estimate)
+    if f_sig is not None:
+        try:
+            time_steady = time[transient_samples:]
+            a = np.column_stack([
+                np.cos(2.0 * np.pi * f_sig * time_steady),
+                np.sin(2.0 * np.pi * f_sig * time_steady)
+            ])
+            coeffs, *_ = np.linalg.lstsq(a, rec, rcond=None)
+            fund = a.dot(coeffs)
+            resid = rec - fund
+            fund_power = float(np.mean(fund ** 2))
+            resid_power = float(np.mean(resid ** 2))
+            sinad_td = 200.0 if resid_power < 1e-30 or fund_power <= 0.0 else 10.0 * np.log10(fund_power / resid_power)
+
+            print('\n--- Time-Domain LS SINAD ---')
+            print(f'  Fundamental power (time-domain): {fund_power:.6e}')
+            print(f'  Residual power (time-domain):    {resid_power:.6e}')
+            print(f'  SINAD (time-domain, dB):         {sinad_td:.3f}')
+            print(f'  Input quantization SNR:          {input_snr_db:.3f} dB')
+        except Exception:
+            print('\nTime-domain LS SINAD calculation failed.')
+
+    # If the simulation results include the canonical/clamped SINAD and ENOB,
+    # print them here for convenience so diagnostics show raw+canonical values.
+    try:
+        if isinstance(sim_results, dict):
+            clamped = sim_results.get('sinad_time_domain_clamped_db', None)
+            enob_canon = sim_results.get('enob_canonical_from_sinad', None)
+            if clamped is not None:
+                print('\n--- Canonical (clamped) SINAD/ENOB from simulation ---')
+                print(f'  SINAD (clamped, dB):            {clamped:.3f}')
+                if enob_canon is not None:
+                    print(f'  ENOB (canonical, bits):         {enob_canon:.3f}')
+    except Exception:
+        pass
+
+    return
+
 
 if __name__ == "__main__":
     """
@@ -933,13 +1237,12 @@ if __name__ == "__main__":
     print("   Designed for Cryogenic Low-Power Applications")
     print("=" * 70)
     
-    # Quick comparison test
     for order in [1, 2, 3]: 
         results = run_single_simulation(
             modulator_order=order,
             oversampling_ratio=512,
             signal_frequency_hz=10000.0,
-            signal_amplitude=0.5 if order <= 2 else 0.4,  # Lower amplitude for Order 3
+            signal_amplitude=0.5 if order <= 2 else 0.4,
             number_of_samples=16384,
             plot_results=False,
             verbose=False
@@ -947,19 +1250,17 @@ if __name__ == "__main__":
         print(f"Order {order}: SNR = {results['snr_time_domain_db']:.1f} dB, "
               f"ENOB = {results['enob_measured']:.1f} bits, "
               f"Stable = {results['is_stable']}, "
-          f"Max Integrator = {results['max_integrator_magnitude']:.2f}")    
+              f"Max Integrator = {results['max_integrator_magnitude']:.2f}")    
     
     # delta_f = sampling_frequency_hz / number_of_samples
     # At OSR = 512 and fs = 20 MHz, number_of_samples = 32768 delta_f = 610.3515625 Hz -> Width of each FFT bin
     
     # Print design recommendations first
     print_design_recommendations(
-        signal_frequency_hz=10000.0,  # Your max:  10 kHz
-        fpga_clock_hz=200_000_000,    # Your FPGA:  200 MHz
-        target_enob=12.0              # Target:  12 effective bits
+        signal_frequency_hz=10000.0,
+        fpga_clock_hz=200_000_000,
+        target_enob=12.0
     )
-    
-    # Uncomment the examples you want to run: 
     
     # Example 1: Basic simulation
     # results = example_basic_simulation()
@@ -975,7 +1276,82 @@ if __name__ == "__main__":
     
     # Example 5: High frequency test
     hf_results = example_high_frequency_signal()
-    
+    # run_diagnostic_checks(hf_results, harmonics=6, transient_periods=5)
+    # # --- Quick diagnostics ---
+    # try:
+    #     # Extract signals and config from the results
+    #     signals = hf_results.get('signals') if isinstance(hf_results, dict) else None
+    #     config = hf_results.get('configuration') if isinstance(hf_results, dict) else None
+
+    #     if signals is not None and signals.reconstructed_analog_signal is not None:
+    #         sampling_frequency_hz = getattr(signals, 'sampling_frequency_hz', None)
+    #         signal_frequency_hz = getattr(signals, 'signal_frequency_hz', None)
+    #         number_of_samples = signals.get_number_of_samples()
+
+    #         # Use the same transient-removal logic as the simulator
+    #         transient_samples = 0
+    #         if sampling_frequency_hz and signal_frequency_hz:
+    #             transient_samples = int(sampling_frequency_hz / signal_frequency_hz * 5)
+    #             transient_samples = min(transient_samples, number_of_samples // 4)
+
+    #         input_steady = signals.input_signal_digital_pcm[transient_samples:]
+    #         reconstructed_steady = signals.reconstructed_analog_signal[transient_samples:]
+
+    #         print('\n--- Quick SNR Diagnostics ---')
+    #         snr_db, diag = compute_snr_with_diagnostics(
+    #             reconstructed_signal=reconstructed_steady,
+    #             reference_signal=input_steady,
+    #             signal_frequency_hz=signal_frequency_hz,
+    #             sampling_frequency_hz=sampling_frequency_hz,
+    #             verbose=True
+    #         )
+    #         print('\nDiagnostics dict:')
+    #         print(diag)
+
+    #         # Compute SINAD and ENOB within the reconstruction band (recommended for ENOB)
+    #         try:
+    #             filter_cutoff = None
+    #             if isinstance(hf_results, dict):
+    #                 cfg = hf_results.get('configuration', {})
+    #                 filter_cutoff = cfg.get('filter_cutoff_frequency_hz', None)
+
+    #             # Fallback: use 1.5x signal frequency if no cutoff found
+    #             if filter_cutoff is None:
+    #                 filter_cutoff = signal_frequency_hz * 1.5 if signal_frequency_hz is not None else None
+
+    #             if filter_cutoff is not None:
+    #                 sinad_db, enob_bits = compute_sinad_in_band(
+    #                     reconstructed_steady,
+    #                     sampling_frequency_hz,
+    #                     signal_frequency_hz,
+    #                     filter_cutoff
+    #                 )
+    #                 print('\n--- SINAD / ENOB (in-band) ---')
+    #                 print(f'  SINAD (dB):            {sinad_db:.2f}')
+    #                 print(f'  ENOB (bits):           {enob_bits:.2f}')
+    #             else:
+    #                 print('\nNo filter cutoff available to compute in-band SINAD.')
+    #         except Exception as _d_e:
+    #             print(f'Failed to compute SINAD/ENOB: {_d_e}')
+
+    #         # Integrator history diagnostics
+    #         integ = signals.integrator_state_history
+    #         if integ is not None:
+    #             import numpy as _np
+    #             max_val = float(_np.max(_np.abs(integ)))
+    #             min_val = float(_np.min(integ))
+    #             pct_saturated = 0.0
+    #             if max_val > 0:
+    #                 pct_saturated = float(_np.sum(_np.isclose(_np.abs(integ), max_val, atol=1e-6))) / integ.size * 100.0
+
+    #             print('\n--- Integrator Diagnostics ---')
+    #             print(f'  Integrator min: {min_val:.6f}, max abs: {max_val:.6f}')
+    #             print(f'  % samples at peak magnitude: {pct_saturated:.3f}%')
+    #     else:
+    #         print('\nNo reconstructed signal available for diagnostics.')
+    # except Exception as _e:
+    #     print(f'Failed to run diagnostics: {_e}')
+
     print("\n" + "=" * 70)
     print("   SIMULATION SESSION COMPLETE")
     print("=" * 70)

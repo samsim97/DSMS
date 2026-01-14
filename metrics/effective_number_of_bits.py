@@ -63,7 +63,7 @@ def compute_effective_number_of_bits(signal_to_noise_ratio_db: float) -> float:
     """
     # The standard formula relating SNR to ENOB
     # Derived from:  SNR = 6.02*N + 1.76 for an ideal N-bit converter
-    enob:  float = (signal_to_noise_ratio_db - 1.76) / 6.02
+    enob: float = (signal_to_noise_ratio_db - 1.76) / 6.02
 
     return enob
 

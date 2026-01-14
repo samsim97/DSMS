@@ -292,11 +292,12 @@ def compute_signal_to_noise_ratio_frequency_domain(
     for harmonic in range(1, number_of_harmonics_to_exclude + 1):
         harmonic_frequency = harmonic * signal_frequency_hz
         bin_index = int(round(harmonic_frequency / frequency_resolution_hz))
-        if bin_index < len(positive_spectrum):
-            for offset in range(-2, 3):
-                adjacent_bin = bin_index + offset
-                if 0 <= adjacent_bin < len(positive_spectrum):
-                    signal_bins.add(adjacent_bin)
+        if bin_index >= len(positive_spectrum):
+            continue
+        for offset in range(-2, 3):
+            adjacent_bin = bin_index + offset
+            if 0 <= adjacent_bin < len(positive_spectrum):
+                signal_bins.add(adjacent_bin)
     
     signal_power = sum(positive_spectrum[b] for b in signal_bins)
     
@@ -309,6 +310,81 @@ def compute_signal_to_noise_ratio_frequency_domain(
         return 200.0
     
     return 10.0 * np.log10(signal_power / noise_power)
+
+
+def compute_sinad_in_band(
+    signal: np.ndarray,
+    sampling_frequency_hz: float,
+    signal_frequency_hz: float,
+    signal_bandwidth_hz: float,
+    num_harmonics: int = 6
+) -> tuple[float, float]:
+    """
+    Compute SINAD (signal-to-noise-and-distortion) restricted to a reconstruction band
+    and return (SINAD_dB, ENOB_bits).
+
+    The function:
+    - Applies a Hann window and computes the FFT power spectrum.
+    - Identifies the fundamental (±2 bins) as the signal.
+    - Identifies harmonics (2..num_harmonics) within the reconstruction band as distortion.
+    - Treats remaining in-band bins (excluding DC) as noise.
+    - Returns SINAD in dB and ENOB computed from SINAD using ENOB = (SINAD - 1.76) / 6.02.
+
+    This is the recommended metric for ENOB in delta-sigma systems because it
+    measures usable resolution inside the reconstruction band and accounts for
+    harmonic distortion.
+    """
+    N = len(signal)
+    if N < 4:
+        return 0.0, 0.0
+
+    window = np.hanning(N)
+    windowed = signal * window
+    spectrum = np.fft.fft(windowed)
+    power_spectrum = np.abs(spectrum) ** 2
+
+    half = N // 2
+    freq_axis = np.fft.fftfreq(N, d=1.0 / sampling_frequency_hz)[:half]
+
+    # Frequency resolution and fundamental bin
+    freq_res = sampling_frequency_hz / N
+    fund_bin = int(round(signal_frequency_hz / freq_res))
+
+    # Collect bins for fundamental (±2 bins) if inside band
+    signal_bins = set()
+    for offset in range(-2, 3):
+        b = fund_bin + offset
+        if 0 <= b < half and freq_axis[b] <= signal_bandwidth_hz:
+            signal_bins.add(b)
+
+    # Collect harmonic bins (2..num_harmonics)
+    harmonic_bins = set()
+    for h in range(2, num_harmonics + 1):
+        hb = fund_bin * h
+        for offset in range(-2, 3):
+            b = hb + offset
+            if 0 <= b < half and freq_axis[b] <= signal_bandwidth_hz:
+                harmonic_bins.add(b)
+
+    # Compute powers
+    signal_power = float(np.sum([power_spectrum[b] for b in signal_bins])) if signal_bins else 0.0
+    distortion_power = float(np.sum([power_spectrum[b] for b in harmonic_bins])) if harmonic_bins else 0.0
+
+    # Noise = in-band bins excluding DC (bin 0), signal bins and harmonic bins
+    noise_power = 0.0
+    for b in range(1, half):
+        if freq_axis[b] <= signal_bandwidth_hz and b not in signal_bins and b not in harmonic_bins:
+            noise_power += float(power_spectrum[b])
+
+    denom = noise_power + distortion_power
+    if denom < 1e-20 or signal_power <= 0.0:
+        sinad_db = 200.0
+        enob = float('inf')
+    else:
+        sinad_db = 10.0 * np.log10(signal_power / denom)
+        enob = (sinad_db - 1.76) / 6.02
+
+    return sinad_db, enob
 
 
 def compute_in_band_snr(
