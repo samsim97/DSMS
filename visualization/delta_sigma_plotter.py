@@ -133,10 +133,14 @@ class DeltaSigmaPlotter:
         save_path: Optional[str] = None
     ) -> None:
         """
-        Plot the frequency spectrum of a signal.
-
-        Shows the power spectral density in dB, useful for analyzing
-        noise shaping effectiveness. 
+        Plot the frequency spectrum using windowed FFT (unnormalized power plot).
+        
+        NOTE: This method computes windowed FFT magnitude squared without proper
+        PSD normalization. The y-axis shows relative power in dB but is NOT 
+        calibrated as power per Hz (V²/Hz). For proper PSD analysis with correct
+        units, use plot_psd_welch() instead.
+        
+        This method is kept for backward compatibility and quick visualization.
 
         Args:
             signal:  The signal to analyze.
@@ -204,8 +208,8 @@ class DeltaSigmaPlotter:
             )
 
         ax.set_xlabel('Frequency (kHz)', fontsize=11)
-        ax.set_ylabel('Power Spectral Density (dB)', fontsize=11)
-        ax.set_title('Frequency Spectrum Analysis', fontsize=12, fontweight='bold')
+        ax.set_ylabel('FFT Power (dB, unnormalized)', fontsize=11)
+        ax.set_title('Frequency Spectrum Analysis (FFT)', fontsize=12, fontweight='bold')
         ax.set_xlim(0, freq_limit / 1000)
         ax.set_ylim(-120, max(spectrum_positive) + 10)
         ax.grid(True, alpha=0.3)
@@ -242,6 +246,137 @@ class DeltaSigmaPlotter:
         if save_path:
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
 
+        plt.show()
+
+    @staticmethod
+    def plot_psd_welch(
+        signal: np.ndarray,
+        sampling_frequency_hz: float,
+        signal_label: str = "Signal",
+        signal_frequency_hz: Optional[float] = None,
+        cutoff_frequency_hz: Optional[float] = None,
+        max_frequency_hz: Optional[float] = None,
+        nperseg: Optional[int] = None,
+        noverlap: Optional[int] = None,
+        window: str = 'hann',
+        return_db: bool = True,
+        db_reference: Optional[float] = None,
+        save_path: Optional[str] = None
+    ) -> None:
+        """
+        Plot true Power Spectral Density using Welch's method.
+        
+        This provides a properly normalized PSD in V²/Hz (or dB/Hz) using 
+        scipy.signal.welch. This is the recommended method for analyzing
+        noise floors and comparing configurations.
+        
+        Args:
+            signal: The signal to analyze
+            sampling_frequency_hz: Sampling rate in Hz
+            signal_label: Label for the plot
+            signal_frequency_hz: If provided, mark signal frequency with vertical line
+            cutoff_frequency_hz: If provided, mark filter cutoff with vertical line
+            max_frequency_hz: Maximum frequency to display (zoom in on low frequencies)
+            nperseg: Length of each segment for Welch's method (default: len(signal)//8)
+            noverlap: Number of overlapping points (default: nperseg//2)
+            window: Window function ('hann', 'hamming', 'blackman', etc.)
+            return_db: If True, plot in dB scale; if False, plot linear
+            db_reference: Full-scale reference for dBFS (if None, uses dB/Hz)
+            save_path: If provided, save figure to this path
+        """
+        try:
+            from metrics.psd_utils import compute_psd_with_options
+        except ImportError:
+            print("Error: scipy is required for Welch PSD computation.")
+            print("Install it with: pip install scipy>=1.7.0")
+            print("Falling back to basic FFT plot...")
+            DeltaSigmaPlotter.plot_frequency_spectrum(
+                signal, sampling_frequency_hz, signal_label,
+                signal_frequency_hz, cutoff_frequency_hz, save_path=save_path
+            )
+            return
+        
+        # Compute PSD using Welch's method
+        frequencies, psd, metadata = compute_psd_with_options(
+            signal_data=signal,
+            sampling_frequency_hz=sampling_frequency_hz,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            window=window,
+            detrend='constant',
+            remove_dc=True,
+            return_db=return_db,
+            db_reference=db_reference
+        )
+        
+        # Determine frequency range to display
+        if max_frequency_hz is None:
+            if cutoff_frequency_hz is not None:
+                max_frequency_hz = cutoff_frequency_hz * 20  # Show 20x cutoff by default
+            else:
+                max_frequency_hz = sampling_frequency_hz / 2
+        
+        # Create plot
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        # Convert to kHz for readability
+        frequencies_khz = frequencies / 1000.0
+        
+        ax.plot(frequencies_khz, psd, 'b-', linewidth=0.7, label=signal_label, alpha=0.8)
+        
+        # Mark signal frequency
+        if signal_frequency_hz is not None:
+            ax.axvline(
+                x=signal_frequency_hz / 1000,
+                color='g', linestyle='--', linewidth=1.5,
+                label=f"Signal: {signal_frequency_hz/1000:.2f} kHz"
+            )
+        
+        # Mark cutoff frequency
+        if cutoff_frequency_hz is not None:
+            ax.axvline(
+                x=cutoff_frequency_hz / 1000,
+                color='r', linestyle=':', linewidth=1.5,
+                label=f'Cutoff: {cutoff_frequency_hz/1000:.2f} kHz'
+            )
+        
+        # Set labels and title
+        ax.set_xlabel('Frequency (kHz)', fontsize=11)
+        y_label = f"PSD ({metadata['units']})"
+        ax.set_ylabel(y_label, fontsize=11)
+        
+        title = "Power Spectral Density (Welch's Method)"
+        ax.set_title(title, fontsize=12, fontweight='bold')
+        
+        # Set axis limits
+        ax.set_xlim(0, max_frequency_hz / 1000)
+        if return_db:
+            # For dB scale, set reasonable limits
+            psd_max = np.max(psd[np.isfinite(psd)])
+            psd_min = np.min(psd[np.isfinite(psd)])
+            ax.set_ylim(max(-140, psd_min - 10), psd_max + 10)
+        
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='upper right', fontsize=9)
+        
+        # Add info text about Welch parameters
+        info_text = (
+            f"Welch: nperseg={metadata['nperseg']}, "
+            f"window={metadata['window']}, "
+            f"freq_res={metadata['frequency_resolution_hz']:.2f} Hz"
+        )
+        ax.text(
+            0.02, 0.02, info_text,
+            transform=ax.transAxes, fontsize=8,
+            verticalalignment='bottom',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        )
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        
         plt.show()
 
     @staticmethod
