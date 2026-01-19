@@ -506,6 +506,17 @@ def run_single_simulation(
             cutoff_frequency_hz=filter_cutoff_frequency_hz
         )
         
+        transient = number_of_samples // 5
+        recon_steady = reconstructed_signal[transient:]
+        
+        DeltaSigmaPlotter.plot_frequency_spectrum(
+            signal=recon_steady,
+            sampling_frequency_hz=sampling_frequency_hz,
+            signal_label="Reconstructed Signal Spectrum",
+            signal_frequency_hz=signal_frequency_hz,
+            cutoff_frequency_hz=filter_cutoff_frequency_hz
+        )
+        
         # Plot integrator states (for stability analysis)
         if integrator_history is not None: 
             DeltaSigmaPlotter.plot_integrator_states(
@@ -977,8 +988,9 @@ def example_high_frequency_signal():
         signal_amplitude=0.4,
         number_of_samples=655360,
         # number_of_samples=32768,
+        input_word_length_bits=24,
         use_ideal_filter=False,
-        dither_std=0e-7,
+        dither_std=1e-5,
         dither_seed=42,
         filter_cutoff_frequency_hz=15000.0,
         plot_results=True,
