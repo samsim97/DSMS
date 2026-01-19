@@ -17,6 +17,12 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import RangeSlider
 from typing import Optional, List, Tuple, Dict, Any
 
+from metrics.metrics_psd_and_tone_metrics import (
+    WelchPsdConfig,
+    compute_welch_psd,
+    psd_to_db_per_hz,
+    psd_to_dbfs_per_hz,
+)
 
 class DeltaSigmaPlotter:
     """
@@ -129,23 +135,24 @@ class DeltaSigmaPlotter:
         signal_frequency_hz: Optional[float] = None,
         cutoff_frequency_hz: Optional[float] = None,
         show_full_spectrum: bool = False,
-        frequency_multiplier: int = 20,
         save_path: Optional[str] = None
     ) -> None:
         """
-        Plot the frequency spectrum of a signal.
+        Plot an *unnormalized FFT power spectrum* of a signal (for quick qualitative inspection).
 
-        Shows the power spectral density in dB, useful for analyzing
-        noise shaping effectiveness. 
+        IMPORTANT:
+        - This is NOT a true PSD (not in units/Hz).
+        - The magnitude depends on FFT length, window, and scaling choices.
+        - For a true PSD (power/Hz), use plot_psd_welch().
 
         Args:
-            signal:  The signal to analyze.
-            sampling_frequency_hz: Sampling rate in Hz.
-            signal_label: Label for the plot legend.
-            signal_frequency_hz: If provided, mark signal frequency.
-            cutoff_frequency_hz: If provided, mark filter cutoff. 
-            show_full_spectrum:  If True, show full spectrum to Nyquist.
-            save_path: If provided, save figure to this path.
+            signal: signal to analyze
+            sampling_frequency_hz: sampling rate in Hz
+            signal_label: label for legend
+            signal_frequency_hz: optional tone marker
+            cutoff_frequency_hz: optional cutoff marker
+            show_full_spectrum: if True, show up to fs/2; else show a limited range
+            save_path: optional save path
         """
         number_of_samples: int = len(signal)
 
@@ -154,11 +161,10 @@ class DeltaSigmaPlotter:
         windowed_signal: np.ndarray = signal * window
 
         # Compute FFT
-        spectrum: np.ndarray = np. fft.fft(windowed_signal)
+        spectrum: np.ndarray = np.fft.fft(windowed_signal)
 
-        # Compute power spectrum in dB
+        # Compute (unnormalized) power spectrum in dB (arbitrary scale)
         power_spectrum:  np.ndarray = np.abs(spectrum) ** 2
-        # Avoid log(0) by adding small value
         power_spectrum_db: np.ndarray = 10 * np.log10(power_spectrum + 1e-20)
 
         # Frequency axis
@@ -169,80 +175,121 @@ class DeltaSigmaPlotter:
 
         # Only show positive frequencies
         positive_mask: np.ndarray = frequency_axis >= 0
-        frequencies_positive: np.ndarray = frequency_axis[positive_mask]
-        spectrum_positive: np.ndarray = power_spectrum_db[positive_mask]
+        frequency_axis = frequency_axis[positive_mask]
+        power_spectrum_db = power_spectrum_db[positive_mask]
 
-        # Limit frequency range for better visibility.
-        # Use `frequency_multiplier` to allow a wider default display around cutoff.
-        if not show_full_spectrum and cutoff_frequency_hz is not None:
-            freq_limit = min(cutoff_frequency_hz * frequency_multiplier, sampling_frequency_hz / 2)
+        # Limit view
+        if show_full_spectrum:
+            max_frequency_hz = sampling_frequency_hz / 2.0
         else:
-            freq_limit = sampling_frequency_hz / 2
+            # Default: show up to 300 kHz (or Nyquist if smaller)
+            max_frequency_hz = min(300_000.0, sampling_frequency_hz / 2.0)
 
-        # Create plot
-        fig, ax = plt.subplots(figsize=(12, 6))
+        view_mask = frequency_axis <= max_frequency_hz
 
-        # Convert to kHz for readability
-        frequencies_khz: np.ndarray = frequencies_positive / 1000
+        plt.figure(figsize=(14, 7))
+        plt.plot(frequency_axis[view_mask] / 1000.0, power_spectrum_db[view_mask],
+                 'b-', linewidth=0.7, alpha=0.9, label=f"{signal_label} (FFT power)")
 
-        ax.plot(frequencies_khz, spectrum_positive, 'b-', linewidth=0.5, label=signal_label)
+        plt.title("Frequency Spectrum Analysis (Unnormalized FFT Power)")
+        plt.xlabel("Frequency (kHz)")
+        plt.ylabel("Power (dB, arbitrary)")
+        plt.grid(True, alpha=0.3)
 
-        # Mark signal frequency
         if signal_frequency_hz is not None:
-            ax.axvline(
-                x=signal_frequency_hz / 1000,
-                color='g', linestyle='--', linewidth=1.5,
-                label=f"Signal:  {signal_frequency_hz/1000:.1f} kHz"
-            )
+            plt.axvline(signal_frequency_hz / 1000.0, color='g', linestyle='--',
+                        linewidth=1.0, label=f"Signal: {signal_frequency_hz/1000:.1f} kHz")
 
-        # Mark cutoff frequency
-        if cutoff_frequency_hz is not None: 
-            ax.axvline(
-                x=cutoff_frequency_hz / 1000,
-                color='r', linestyle=':', linewidth=1.5,
-                label=f'Filter Cutoff: {cutoff_frequency_hz/1000:.1f} kHz'
-            )
+        if cutoff_frequency_hz is not None:
+            plt.axvline(cutoff_frequency_hz / 1000.0, color='r', linestyle=':',
+                        linewidth=1.5, label=f"Filter Cutoff: {cutoff_frequency_hz/1000:.1f} kHz")
 
-        ax.set_xlabel('Frequency (kHz)', fontsize=11)
-        ax.set_ylabel('Power Spectral Density (dB)', fontsize=11)
-        ax.set_title('Frequency Spectrum Analysis', fontsize=12, fontweight='bold')
-        ax.set_xlim(0, freq_limit / 1000)
-        ax.set_ylim(-120, max(spectrum_positive) + 10)
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc='upper right', fontsize=9)
-
-        # Make room for interactive widgets below the plot
-        plt.subplots_adjust(bottom=0.32)
-
-        # Interactive RangeSlider to control visible frequency range (in kHz)
-        try:
-            ax_slider = plt.axes([0.15, 0.02, 0.7, 0.04], facecolor='lightgoldenrodyellow')
-            slider = RangeSlider(
-                ax=ax_slider,
-                label='Visible Frequency Range (kHz)',
-                valmin=0.0,
-                valmax=float(frequencies_khz.max()),
-                valinit=(0.0, float(freq_limit / 1000)),
-                valfmt='%.2f'
-            )
-
-            def _update(val):
-                vmin, vmax = slider.val
-                ax.set_xlim(vmin, vmax)
-                fig.canvas.draw_idle()
-
-            slider.on_changed(_update)
-        except Exception:
-            # If interactive widgets are not available in the current backend,
-            # silently continue without interactive controls.
-            pass
-
+        plt.legend(loc="upper right")
         plt.tight_layout()
-
         if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches='tight')
-
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
         plt.show()
+        
+    @staticmethod
+    def plot_psd_welch(
+        signal: np.ndarray,
+        sampling_frequency_hz: float,
+        signal_label: str = "Signal",
+        signal_frequency_hz: Optional[float] = None,
+        cutoff_frequency_hz: Optional[float] = None,
+        band_limit_hz: Optional[float] = None,
+        max_frequency_hz: Optional[float] = 300_000.0,
+        nperseg: int = 16384,
+        noverlap: Optional[int] = None,
+        window: str = "hann",
+        remove_mean: bool = True,
+        detrend: bool = False,
+        dbfs: bool = False,
+        full_scale_peak: float = 1.0,
+        save_path: Optional[str] = None
+    ) -> None:
+        """
+        Plot a true PSD using Welch's method (units^2/Hz) and display in dB/Hz.
+
+        If dbfs=True, shows dBFS/Hz assuming full_scale_peak corresponds to 0 dBFS peak amplitude.
+
+        band_limit_hz: if provided, highlight in-band region and optionally limit x-axis.
+        max_frequency_hz: hard x-axis cap for display convenience.
+        """
+        if compute_welch_psd is None:
+            raise ImportError("scipy (and metrics.psd_and_tone_metrics) required for Welch PSD plotting")
+
+        cfg = WelchPsdConfig(
+            window=window,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            detrend=detrend,
+            remove_mean=remove_mean
+        )
+        f_hz, pxx = compute_welch_psd(signal, sampling_frequency_hz, cfg)
+
+        if dbfs:
+            y_db = psd_to_dbfs_per_hz(pxx, full_scale_peak=full_scale_peak)
+            y_label = "PSD (dBFS/Hz)"
+        else:
+            y_db = psd_to_db_per_hz(pxx)
+            y_label = "PSD (dB/Hz)"
+
+        # Determine plot max freq
+        nyquist = sampling_frequency_hz / 2.0
+        if max_frequency_hz is None:
+            max_frequency_hz = nyquist
+        max_frequency_hz = min(float(max_frequency_hz), nyquist)
+
+        if band_limit_hz is not None:
+            max_frequency_hz = min(max_frequency_hz, float(band_limit_hz) * 20.0)  # default reasonable zoom
+
+        view = f_hz <= max_frequency_hz
+
+        plt.figure(figsize=(14, 7))
+        plt.plot(f_hz[view] / 1000.0, y_db[view], 'b-', linewidth=0.8, label=f"{signal_label} PSD (Welch)")
+
+        plt.title("Power Spectral Density (Welch, scaling='density')")
+        plt.xlabel("Frequency (kHz)")
+        plt.ylabel(y_label)
+        plt.grid(True, alpha=0.3)
+
+        if band_limit_hz is not None:
+            plt.axvspan(0.0, band_limit_hz / 1000.0, color="gray", alpha=0.08, label="In-band")
+
+        if signal_frequency_hz is not None:
+            plt.axvline(signal_frequency_hz / 1000.0, color='g', linestyle='--',
+                        linewidth=1.0, label=f"Signal: {signal_frequency_hz/1000:.1f} kHz")
+
+        if cutoff_frequency_hz is not None:
+            plt.axvline(cutoff_frequency_hz / 1000.0, color='r', linestyle=':',
+                        linewidth=1.5, label=f"Cutoff: {cutoff_frequency_hz/1000:.1f} kHz")
+
+        plt.legend(loc="upper right")
+        plt.tight_layout()
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.show()        
 
     @staticmethod
     def plot_noise_shaping_comparison(
