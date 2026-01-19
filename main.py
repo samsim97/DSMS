@@ -826,11 +826,6 @@ def print_design_recommendations(
 # ============================================================================
 
 def example_basic_simulation():
-    """
-    Example 1: Basic single simulation. 
-    
-    This example shows the simplest way to run a delta-sigma DAC simulation. 
-    """
     print("\n" + "#" * 70)
     print("# EXAMPLE 1: Basic Single Simulation")
     print("#" * 70)
@@ -850,12 +845,6 @@ def example_basic_simulation():
 
 
 def example_compare_orders():
-    """
-    Example 2: Compare different modulator orders. 
-    
-    This example shows how to compare performance across different
-    modulator orders to find the best one for your application.
-    """
     print("\n" + "#" * 70)
     print("# EXAMPLE 2: Comparing Different Modulator Orders")
     print("#" * 70)
@@ -874,12 +863,6 @@ def example_compare_orders():
 
 
 def example_fpga_resource_analysis():
-    """
-    Example 3: Detailed FPGA resource and power analysis.
-    
-    This example focuses on FPGA-specific metrics that are important
-    for your cryogenic low-power application.
-    """
     print("\n" + "#" * 70)
     print("# EXAMPLE 3: FPGA Resource and Power Analysis")
     print("#" * 70)
@@ -887,9 +870,9 @@ def example_fpga_resource_analysis():
     # Run simulation and get detailed FPGA metrics
     results = run_single_simulation(
         modulator_order=2,
-        oversampling_ratio=256,
-        signal_frequency_hz=5000.0,  # 5 kHz signal (mid-range for your app)
-        signal_amplitude=0.5,
+        oversampling_ratio=2048,
+        signal_frequency_hz=10000.0,
+        signal_amplitude=0.4,
         number_of_samples=16384,
         plot_results=False,  # Skip plots for this analysis
         verbose=True
@@ -900,8 +883,8 @@ def example_fpga_resource_analysis():
     
     fpga_calc = FPGAMetricsCalculator(
         modulator_order=2,
-        oversampling_ratio=256,
-        signal_bandwidth_hz=5000.0,
+        oversampling_ratio=2048,
+        signal_bandwidth_hz=10000.0,
         fpga_clock_hz=200_000_000
     )
     
@@ -912,13 +895,6 @@ def example_fpga_resource_analysis():
 
 
 def example_filter_comparison():
-    """
-    Example 4: Compare ideal vs realistic filter. 
-    
-    This example shows the difference between an ideal brick-wall filter
-    (theoretical best case) and a realistic first-order RC filter
-    (what you'll actually use with your FPGA).
-    """
     print("\n" + "#" * 70)
     print("# EXAMPLE 4: Filter Comparison (Ideal vs RC)")
     print("#" * 70)
@@ -927,9 +903,9 @@ def example_filter_comparison():
     print("\n--- Simulation with Ideal Filter ---")
     results_ideal = run_single_simulation(
         modulator_order=2,
-        oversampling_ratio=256,
-        signal_frequency_hz=1000.0,
-        signal_amplitude=0.5,
+        oversampling_ratio=2048,
+        signal_frequency_hz=10000.0,
+        signal_amplitude=0.4,
         use_ideal_filter=True,
         plot_results=False,
         verbose=True
@@ -960,12 +936,6 @@ def example_filter_comparison():
 
 
 def example_high_frequency_signal():
-    """
-    Example 5: Test with maximum frequency (10 kHz).
-    
-    This example tests the system with your maximum signal frequency
-    to ensure the design works across your entire operating range.
-    """
     print("\n" + "#" * 70)
     print("# EXAMPLE 5: Maximum Frequency Test (10 kHz)")
     print("#" * 70)
