@@ -81,8 +81,14 @@ def run_single_simulation(
     use_ideal_filter: bool = False,
     integrator_saturation_limit: Optional[float] = 4.0,
     plot_results: bool = True,
-    verbose: bool = True
-) -> Dict: 
+    verbose: bool = True,
+    # New spectrum analysis parameters
+    spectrum_method: str = 'welch',
+    spectrum_nperseg: Optional[int] = None,
+    spectrum_max_freq_hz: Optional[float] = None,
+    spectrum_remove_transient_fraction: float = 0.2,
+    spectrum_db_ref: Optional[float] = None
+) -> Dict:
     """
     Run a complete delta-sigma DAC simulation with specified parameters.
 
@@ -133,6 +139,21 @@ def run_single_simulation(
         plot_results: If True, display plots of results. 
 
         verbose: If True, print progress and results.
+        
+        spectrum_method: Method for spectrum analysis ('welch' or 'fft').
+            'welch' (default) provides true PSD with proper normalization.
+            'fft' uses the legacy windowed FFT method.
+        
+        spectrum_nperseg: Segment length for Welch's method (if None, auto-calculated).
+        
+        spectrum_max_freq_hz: Maximum frequency to display in spectrum plots.
+            If None, shows up to 20x cutoff frequency.
+        
+        spectrum_remove_transient_fraction: Fraction of signal to remove as transient
+            before computing spectrum (0.0 to 1.0, default 0.2 = 20%).
+        
+        spectrum_db_ref: Full-scale reference for dBFS spectrum display.
+            If None, uses dB/Hz. Typically set to signal_amplitude for dBFS.
 
     Returns:
         Dict containing all simulation results: 
@@ -426,6 +447,50 @@ def run_single_simulation(
         print(f"  SINAD (LS time-domain): {sinad_time_domain_db:.3f} dB")
         print(f"  SINAD (LS clamped):     {sinad_time_domain_clamped_db:.3f} dB")
         print(f"  ENOB (canonical):       {enob_from_sinad_canonical:.3f} bits")
+    
+    # Compute PSD-based metrics (optional, if scipy available)
+    psd_metrics = None
+    try:
+        from metrics.psd_utils import compute_welch_psd
+        from metrics.spectrum_metrics import compute_all_metrics_from_psd
+        
+        # Compute Welch PSD on reconstructed signal (with transient removal)
+        transient_samples_psd = int(spectrum_remove_transient_fraction * number_of_samples)
+        signal_for_psd = reconstructed_steady  # Already has transient removed
+        
+        frequencies_psd, psd_linear = compute_welch_psd(
+            signal_data=signal_for_psd,
+            sampling_frequency_hz=sampling_frequency_hz,
+            nperseg=spectrum_nperseg,
+            window='hann',
+            remove_dc=True
+        )
+        
+        # Compute all metrics from PSD
+        psd_metrics = compute_all_metrics_from_psd(
+            frequencies=frequencies_psd,
+            psd_linear=psd_linear,
+            fundamental_frequency_hz=signal_frequency_hz,
+            band_limit_hz=filter_cutoff_frequency_hz,
+            num_harmonics=6
+        )
+        
+        if verbose:
+            print(f"\n--- PSD-Based Metrics (Welch Method) ---")
+            print(f"  SNR (from PSD):         {psd_metrics['snr_db']:.1f} dB")
+            print(f"  SNDR (from PSD):        {psd_metrics['sndr_db']:.1f} dB")
+            print(f"  ENOB (from PSD):        {psd_metrics['enob']:.2f} bits")
+            print(f"  THD:                    {psd_metrics['thd_db']:.1f} dB")
+            print(f"  SFDR:                   {psd_metrics['sfdr_db']:.1f} dB")
+            
+    except ImportError:
+        if verbose:
+            print(f"\n  Note: scipy not available for PSD-based metrics")
+        psd_metrics = None
+    except Exception as e:
+        if verbose:
+            print(f"\n  Warning: Could not compute PSD metrics: {e}")
+        psd_metrics = None
 
     # ========================================================================
     # STEP 6: CALCULATE FPGA-SPECIFIC METRICS
@@ -497,14 +562,46 @@ def run_single_simulation(
             samples_to_show=samples_to_show
         )
         
-        # Plot frequency spectrum
-        DeltaSigmaPlotter.plot_frequency_spectrum(
-            signal=modulator_output,
-            sampling_frequency_hz=sampling_frequency_hz,
-            signal_label="Modulator Output Spectrum",
-            signal_frequency_hz=signal_frequency_hz,
-            cutoff_frequency_hz=filter_cutoff_frequency_hz
-        )
+        # Determine which signal to analyze spectrally
+        # Use reconstructed signal with transient removal
+        transient_samples_spectrum = int(spectrum_remove_transient_fraction * number_of_samples)
+        signal_for_spectrum = reconstructed_signal[transient_samples_spectrum:]
+        
+        # Plot frequency spectrum using selected method
+        if spectrum_method == 'welch':
+            # Use new Welch PSD method (recommended)
+            try:
+                DeltaSigmaPlotter.plot_psd_welch(
+                    signal=signal_for_spectrum,
+                    sampling_frequency_hz=sampling_frequency_hz,
+                    signal_label="Reconstructed Signal PSD",
+                    signal_frequency_hz=signal_frequency_hz,
+                    cutoff_frequency_hz=filter_cutoff_frequency_hz,
+                    max_frequency_hz=spectrum_max_freq_hz,
+                    nperseg=spectrum_nperseg,
+                    window='hann',
+                    return_db=True,
+                    db_reference=spectrum_db_ref
+                )
+            except ImportError:
+                if verbose:
+                    print("  Warning: scipy not available, falling back to FFT method")
+                DeltaSigmaPlotter.plot_frequency_spectrum(
+                    signal=signal_for_spectrum,
+                    sampling_frequency_hz=sampling_frequency_hz,
+                    signal_label="Reconstructed Signal Spectrum",
+                    signal_frequency_hz=signal_frequency_hz,
+                    cutoff_frequency_hz=filter_cutoff_frequency_hz
+                )
+        else:
+            # Use legacy FFT method
+            DeltaSigmaPlotter.plot_frequency_spectrum(
+                signal=signal_for_spectrum,
+                sampling_frequency_hz=sampling_frequency_hz,
+                signal_label="Reconstructed Signal Spectrum",
+                signal_frequency_hz=signal_frequency_hz,
+                cutoff_frequency_hz=filter_cutoff_frequency_hz
+            )
         
         # Plot integrator states (for stability analysis)
         if integrator_history is not None: 
@@ -545,6 +642,7 @@ def run_single_simulation(
         'switching_metrics': switching_metrics,
         'fpga_resources': fpga_resources,
         'timing_requirements':  timing_requirements,
+        'psd_metrics': psd_metrics,  # New: PSD-based metrics
         'configuration':  {
             'modulator_order':  modulator_order,
             'oversampling_ratio': oversampling_ratio,
@@ -552,7 +650,9 @@ def run_single_simulation(
             'signal_amplitude': signal_amplitude,
             'sampling_frequency_hz': sampling_frequency_hz,
             'filter_cutoff_frequency_hz': filter_cutoff_frequency_hz,
-            'number_of_samples': number_of_samples
+            'number_of_samples': number_of_samples,
+            'spectrum_method': spectrum_method,
+            'spectrum_nperseg': spectrum_nperseg
         }
     }
     
