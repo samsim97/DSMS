@@ -454,9 +454,8 @@ def run_single_simulation(
         from metrics.psd_utils import compute_welch_psd
         from metrics.spectrum_metrics import compute_all_metrics_from_psd
         
-        # Compute Welch PSD on reconstructed signal (with transient removal)
-        transient_samples_psd = int(spectrum_remove_transient_fraction * number_of_samples)
-        signal_for_psd = reconstructed_steady  # Already has transient removed
+        # Compute Welch PSD on reconstructed signal (already has transient removed)
+        signal_for_psd = reconstructed_steady
         
         frequencies_psd, psd_linear = compute_welch_psd(
             signal_data=signal_for_psd,

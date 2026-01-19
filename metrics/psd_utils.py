@@ -66,6 +66,7 @@ def compute_welch_psd(
         signal_data = signal_data - np.mean(signal_data)
     
     # Default segment length: ~1/8 of signal for good frequency resolution
+    # Minimum of 256 ensures reasonable frequency resolution for typical signals
     if nperseg is None:
         nperseg = max(256, len(signal_data) // 8)
     
