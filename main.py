@@ -58,6 +58,12 @@ from metrics.effective_number_of_bits import (
     compute_theoretical_enob_for_delta_sigma,
     print_enob_table
 )
+from metrics.metrics_psd_and_tone_metrics import (
+    WelchPsdConfig,
+    ToneMetricsConfig,
+    compute_welch_psd,
+    compute_single_tone_metrics_from_psd,
+)
 from metrics.fpga_metrics import FPGAMetricsCalculator
 
 # Visualization
@@ -506,6 +512,48 @@ def run_single_simulation(
             cutoff_frequency_hz=filter_cutoff_frequency_hz
         )
         
+        transient = number_of_samples // 5
+        recon_steady = reconstructed_signal[transient:]
+
+        DeltaSigmaPlotter.plot_psd_welch(
+            signal=recon_steady,
+            sampling_frequency_hz=sampling_frequency_hz,
+            signal_label="Reconstructed Signal",
+            signal_frequency_hz=signal_frequency_hz,
+            cutoff_frequency_hz=filter_cutoff_frequency_hz,
+            band_limit_hz=filter_cutoff_frequency_hz,
+            max_frequency_hz=500_000.0,
+            nperseg=262144,
+            # nperseg=16384,
+            dbfs=True,
+            full_scale_peak=1.0
+        )
+
+        # Compute metrics from PSD
+        f_hz, pxx = compute_welch_psd(recon_steady, sampling_frequency_hz, WelchPsdConfig(nperseg=16384))
+        metrics = compute_single_tone_metrics_from_psd(
+            f_hz=f_hz,
+            pxx=pxx,
+            fs_hz=sampling_frequency_hz,
+            f0_expected_hz=signal_frequency_hz,
+            cfg=ToneMetricsConfig(band_limit_hz=filter_cutoff_frequency_hz)
+        )
+
+        # print("\n--- In-band Metrics (Reconstructed Output) ---")
+        # print(f"  Band limit:              {filter_cutoff_frequency_hz/1000:.1f} kHz")
+        # print(f"  Fundamental estimate:    {metrics.f0_est_hz:.3f} Hz")
+        # print(f"  SNR:                     {metrics.snr_db:.2f} dB")
+        # print(f"  SNDR:                    {metrics.sndr_db:.2f} dB")
+        # print(f"  ENOB (from SNDR):        {metrics.enob_bits:.2f} bits")
+        
+        # DeltaSigmaPlotter.plot_frequency_spectrum(
+        #     signal=recon_steady,
+        #     sampling_frequency_hz=sampling_frequency_hz,
+        #     signal_label="Reconstructed Signal Spectrum",
+        #     signal_frequency_hz=signal_frequency_hz,
+        #     cutoff_frequency_hz=filter_cutoff_frequency_hz
+        # )
+        
         # Plot integrator states (for stability analysis)
         if integrator_history is not None: 
             DeltaSigmaPlotter.plot_integrator_states(
@@ -947,8 +995,9 @@ def example_high_frequency_signal():
         signal_amplitude=0.4,
         number_of_samples=655360,
         # number_of_samples=32768,
+        input_word_length_bits=2,
         use_ideal_filter=False,
-        dither_std=0e-7,
+        dither_std=0e-5,
         dither_seed=42,
         filter_cutoff_frequency_hz=15000.0,
         plot_results=True,

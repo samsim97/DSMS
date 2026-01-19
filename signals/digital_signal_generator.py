@@ -82,7 +82,7 @@ class DigitalSignalGenerator:
                 f"Received: {number_of_samples}"
             )
 
-        if word_length_bits < 1 or word_length_bits > 32:
+        if word_length_bits < 1 or word_length_bits > 64:
             raise ValueError(
                 f"Word length must be between 1 and 32 bits.  "
                 f"Received:  {word_length_bits} bits"
