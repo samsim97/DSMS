@@ -490,6 +490,8 @@ def run_single_simulation(
         if verbose:
             print(f"\n--- Step 7: Generating Plots ---")
         
+        file_name_prefix = "sim_out/dsm_order{}_osr{}_wl{}".format(modulator_order, oversampling_ratio, input_word_length_bits)
+
         # Plot time-domain signals (show 5 periods for clarity)
         samples_to_show: int = int(5 * sampling_frequency_hz / signal_frequency_hz)
         samples_to_show = min(samples_to_show, number_of_samples)
@@ -500,17 +502,35 @@ def run_single_simulation(
             modulator_output=modulator_output,
             reconstructed_signal=reconstructed_signal,
             title_prefix=f"Order {modulator_order}, OSR {oversampling_ratio}:  ",
-            samples_to_show=samples_to_show
+            samples_to_show=samples_to_show,
+            save_path=file_name_prefix + "_time_domain_signals.png"
         )
         
-        # Plot frequency spectrum
-        DeltaSigmaPlotter.plot_frequency_spectrum(
-            signal=modulator_output,
+        dsm_transient = samples_to_show // 5
+        modulator_output_steady = modulator_output[dsm_transient:]
+
+        DeltaSigmaPlotter.plot_psd_welch(
+            signal=modulator_output_steady,
             sampling_frequency_hz=sampling_frequency_hz,
-            signal_label="Modulator Output Spectrum",
+            signal_label="Modulator Output",
             signal_frequency_hz=signal_frequency_hz,
-            cutoff_frequency_hz=filter_cutoff_frequency_hz
+            cutoff_frequency_hz=filter_cutoff_frequency_hz,
+            band_limit_hz=filter_cutoff_frequency_hz,
+            max_frequency_hz=500_000.0,
+            nperseg=262144,
+            # nperseg=16384,
+            dbfs=True,
+            full_scale_peak=1.0,
+            save_path=file_name_prefix + "_modulator_output_psd.png"
         )
+        # Plot frequency spectrum
+        # DeltaSigmaPlotter.plot_frequency_spectrum(
+        #     signal=modulator_output,
+        #     sampling_frequency_hz=sampling_frequency_hz,
+        #     signal_label="Modulator Output Spectrum",
+        #     signal_frequency_hz=signal_frequency_hz,
+        #     cutoff_frequency_hz=filter_cutoff_frequency_hz
+        # )
         
         transient = number_of_samples // 5
         recon_steady = reconstructed_signal[transient:]
@@ -526,7 +546,8 @@ def run_single_simulation(
             nperseg=262144,
             # nperseg=16384,
             dbfs=True,
-            full_scale_peak=1.0
+            full_scale_peak=1.0,
+            save_path=file_name_prefix + "_reconstructed_signal_psd.png"
         )
 
         # Compute metrics from PSD
@@ -560,7 +581,8 @@ def run_single_simulation(
                 time_axis_seconds=time_axis,
                 integrator_history=integrator_history,
                 modulator_order=modulator_order,
-                samples_to_show=samples_to_show
+                samples_to_show=samples_to_show,
+                save_path=file_name_prefix + "_integrator_states.png"
             )
         
         # Plot performance summary dashboard
@@ -995,9 +1017,9 @@ def example_high_frequency_signal():
         signal_amplitude=0.4,
         number_of_samples=655360,
         # number_of_samples=32768,
-        input_word_length_bits=2,
+        input_word_length_bits=24,
         use_ideal_filter=False,
-        dither_std=0e-5,
+        dither_std=1e-5,
         dither_seed=42,
         filter_cutoff_frequency_hz=15000.0,
         plot_results=True,
@@ -1256,20 +1278,20 @@ if __name__ == "__main__":
     print("   Designed for Cryogenic Low-Power Applications")
     print("=" * 70)
     
-    for order in [1, 2, 3]: 
-        results = run_single_simulation(
-            modulator_order=order,
-            oversampling_ratio=512,
-            signal_frequency_hz=10000.0,
-            signal_amplitude=0.5 if order <= 2 else 0.4,
-            number_of_samples=16384,
-            plot_results=False,
-            verbose=False
-        )
-        print(f"Order {order}: SNR = {results['snr_time_domain_db']:.1f} dB, "
-              f"ENOB = {results['enob_measured']:.1f} bits, "
-              f"Stable = {results['is_stable']}, "
-              f"Max Integrator = {results['max_integrator_magnitude']:.2f}")    
+    # for order in [1, 2, 3]: 
+    #     results = run_single_simulation(
+    #         modulator_order=order,
+    #         oversampling_ratio=512,
+    #         signal_frequency_hz=10000.0,
+    #         signal_amplitude=0.5 if order <= 2 else 0.4,
+    #         number_of_samples=16384,
+    #         plot_results=False,
+    #         verbose=False
+    #     )
+    #     print(f"Order {order}: SNR = {results['snr_time_domain_db']:.1f} dB, "
+    #           f"ENOB = {results['enob_measured']:.1f} bits, "
+    #           f"Stable = {results['is_stable']}, "
+    #           f"Max Integrator = {results['max_integrator_magnitude']:.2f}")    
     
     # delta_f = sampling_frequency_hz / number_of_samples
     # At OSR = 512 and fs = 20 MHz, number_of_samples = 32768 delta_f = 610.3515625 Hz -> Width of each FFT bin
